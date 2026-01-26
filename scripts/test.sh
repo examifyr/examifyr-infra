@@ -18,14 +18,11 @@ has_npm_script() {
   local value
 
   value="$(npm pkg get "scripts.${script_name}" 2>/dev/null || echo "null")"
-  case "$value" in
-    null|"null"|"undefined"|"" )
-      return 1
-      ;;
-    * )
-      return 0
-      ;;
-  esac
+  if [[ "$value" == "null" || "$value" == "\"null\"" || "$value" == "undefined" || -z "$value" ]]; then
+    return 1
+  fi
+
+  return 0
 }
 
 if [[ -f "package.json" ]]; then
