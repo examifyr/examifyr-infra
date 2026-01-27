@@ -1,15 +1,21 @@
-cat << 'EOF' > .gitignore
 # macOS
 .DS_Store
 
-# IntelliJ / JetBrains
+# IDEs
 .idea/
+.vscode/
 *.iml
 
-# Temporary / accidental files
-touch
+# Env files
+.env
+.env.*
 
 # Python (future-proof)
 __pycache__/
 .venv/
-EOF
+
+# Node
+node_modules/
+
+# Temporary / accidental files
+touch

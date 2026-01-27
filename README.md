@@ -23,3 +23,10 @@ This repository is the **source of truth** for the Examifyr platform.
 
 ## Local Development
 Each repo provides its own `start-local.sh`, aligned with infra standards.
+
+## Step 2.3 – Repo checks
+Run:
+```bash
+./scripts/test.sh
+```
+This script is the single source of truth for repo checks, and CI runs it.
