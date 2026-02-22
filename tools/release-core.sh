@@ -13,13 +13,13 @@ REPO_NAME="${1:-}"
 BACKEND_SMOKE="${BACKEND_SMOKE:-0}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
 
-log() { printf '%s\n' "$1"; }
-err() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
-
 # shellcheck source=tools/lib/git.sh
 source "${LIB_DIR}/git.sh"
 # shellcheck source=tools/lib/github.sh
 source "${LIB_DIR}/github.sh"
+
+# Override err to exit (libs only print)
+err() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
 
 if [[ -z "$REPO_NAME" ]]; then
   err "Usage: release-core.sh <repo_name>. repo_name: backend|frontend|infra. Use BACKEND_SMOKE=1 for backend runtime smoke."
