@@ -1,0 +1,77 @@
+# Auto-tag and create GitHub Release when a PR with label "release" is merged to main.
+# Runs only when: pull_request closed + merged to main + has label "release"
+
+name: Release Tag
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write  # required for creating releases and tags
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for release label
+        id: check
+        run: |
+          labels='${{ toJson(github.event.pull_request.labels) }}'
+          if echo "$labels" | jq -e 'any(.[]; .name == "release")' >/dev/null 2>&1; then
+            echo "has_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip - no release label
+        if: steps.check.outputs.has_release != 'true'
+        run: |
+          echo "PR does not have 'release' label. Skipping tag creation."
+          exit 0
+
+      - name: Checkout
+        if: steps.check.outputs.has_release == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next semantic version
+        if: steps.check.outputs.has_release == 'true'
+        id: version
+        run: |
+          # Get latest tag (semver vX.Y.Z)
+          latest=$(git tag -l 'v*' 2>/dev/null | sort -V | tail -n1)
+          if [[ -z "$latest" ]]; then
+            next="v0.1.0"
+          else
+            # Strip 'v', bump patch
+            ver="${latest#v}"
+            major="${ver%%.*}"
+            rest="${ver#*.}"
+            minor="${rest%%.*}"
+            patch="${rest#*.}"
+            patch=$((patch + 1))
+            next="v${major}.${minor}.${patch}"
+          fi
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "Creating tag: $next"
+
+      - name: Create tag and release
+        if: steps.check.outputs.has_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION"
+          gh release create "$VERSION" \
+            --title "Release $VERSION" \
+            --notes "## Changes
+- PR #${PR_NUM}: ${PR_TITLE}"
