@@ -31,6 +31,12 @@ Run:
 ```
 This script is the single source of truth for repo checks, and CI runs it.
 
+## CI expectations
+
+- **Step 2.3 as source of truth**: Each repo’s main CI workflow (`.github/workflows/ci.yml`) must run `./scripts/test.sh` — not raw pytest/npm/etc directly unless wrapped by `scripts/test.sh`.
+- **Conventional Commits + PR title format**: If workflows enforce PR title or commit message checks, use Conventional Commits (e.g. `feat:`, `fix:`, `chore:`) and ensure PR titles match the expected pattern (e.g. `feat(scope): description`).
+- **Local CI with act (optional)**: To run GitHub Actions locally, install [act](https://github.com/nektos/act) (`brew install act` on macOS). The release orchestrator can run `act push -W .github/workflows/ci.yml` per repo when using `--apply`. Use `--skip-ci-local` to skip this step.
+
 ## Release Orchestration (Federated SemVer)
 
 Infra orchestrates releases; each repo owns its own `VERSION` file and `scripts/semver-bump.sh`. Infra triggers tagging and pushes tags only (never pushes branches).
