@@ -1,53 +1,201 @@
 #!/usr/bin/env bash
-# Release Orchestrator: centralized local checks for all Examifyr repos.
+# Federated SemVer Release Orchestrator: infra orchestrates, each repo owns VERSION + semver-bump.sh.
 # Runs from examifyr-infra. Requires sibling folders: examifyr-backend, examifyr-frontend.
-# Usage: ./scripts/release-orchestrate.sh [--dry-run] [--base-url URL]
-# Flags: --dry-run (print only, no changes), --base-url (default http://127.0.0.1:8000)
+# Usage: ./scripts/release-orchestrate.sh [--dry-run] [--apply] [--yes] [--base-url URL]
+#         [--ci-static-only] [--ci-local] [--skip-ci-local]
+# Default: --dry-run. --apply requires approval unless --yes.
 
 set -euo pipefail
 
 log() { printf '%s\n' "$1"; }
 err() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
 
+post_merge_summary() {
+  log "=== Post-merge verification (manual) ==="
+  log "Open Actions tab on GitHub: confirm latest runs for backend, frontend, infra on main are green."
+  log ""
+}
+
 INFRA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$INFRA_ROOT/.." && pwd)"
 BACKEND_ROOT="${PROJECT_ROOT}/examifyr-backend"
 FRONTEND_ROOT="${PROJECT_ROOT}/examifyr-frontend"
 BASE_URL="http://127.0.0.1:8000"
-DRY_RUN="false"
+DRY_RUN="true"
+APPLY="false"
+YES="false"
+CI_STATIC_ONLY="false"
+CI_LOCAL=""
+SKIP_CI_LOCAL="false"
 
-# Parse flags
+# Parse flags (APPLY, CI_LOCAL used in apply-mode act logic)
+# shellcheck disable=SC2034
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run) DRY_RUN="true"; shift ;;
-    --base-url) [[ -n "${2:-}" ]] || err "--base-url requires a value"; BASE_URL="$2"; shift 2 ;;
-    *) echo "Unknown flag: $1. Use --dry-run or --base-url URL" >&2; exit 1 ;;
+    --dry-run)       DRY_RUN="true"; shift ;;
+    --apply)         APPLY="true"; DRY_RUN="false"; shift ;;
+    --yes)           YES="true"; shift ;;
+    --base-url)      [[ -n "${2:-}" ]] || err "--base-url requires a value"; BASE_URL="$2"; shift 2 ;;
+    --ci-static-only) CI_STATIC_ONLY="true"; shift ;;
+    --ci-local)      CI_LOCAL="true"; shift ;;
+    --skip-ci-local) SKIP_CI_LOCAL="true"; shift ;;
+    *) err "Unknown flag: $1. Use --dry-run, --apply, --yes, --base-url, --ci-static-only, --ci-local, --skip-ci-local" ;;
   esac
 done
 
-log "=== Examifyr Release Orchestrator ==="
+# act availability
+ACT_AVAILABLE="false"
+if command -v act &>/dev/null; then
+  ACT_AVAILABLE="true"
+fi
+
+log "=== Federated SemVer Release Orchestrator ==="
 log ""
 
 if [[ "$DRY_RUN" == "true" ]]; then
-  log "DRY RUN: No changes will be made."
-  log ""
+  log "Mode: --dry-run (no changes)"
+else
+  log "Mode: --apply"
 fi
+log ""
 
-# a) Verify required repo paths exist
-log "Checking repo paths..."
+# --- Pre-flight: repo paths ---
+log "Pre-flight: repo paths..."
 if [[ ! -d "$BACKEND_ROOT" ]]; then
-  err "examifyr-backend not found at $BACKEND_ROOT. Clone it as sibling to examifyr-infra."
+  err "examifyr-backend not found at $BACKEND_ROOT. Clone as sibling to examifyr-infra."
 fi
 if [[ ! -d "$FRONTEND_ROOT" ]]; then
-  err "examifyr-frontend not found at $FRONTEND_ROOT. Clone it as sibling to examifyr-infra."
+  err "examifyr-frontend not found at $FRONTEND_ROOT. Clone as sibling to examifyr-infra."
 fi
 log "  backend:  $BACKEND_ROOT"
 log "  frontend: $FRONTEND_ROOT"
 log "  infra:    $INFRA_ROOT"
 log ""
 
-# b) For each repo: ensure clean working tree
-log "Checking working trees..."
+# --- Pre-flight: semver-bump.sh + VERSION ---
+log "Pre-flight: semver tools..."
+for name in backend frontend infra; do
+  case "$name" in
+    backend)  dir="$BACKEND_ROOT" ;;
+    frontend) dir="$FRONTEND_ROOT" ;;
+    infra)    dir="$INFRA_ROOT" ;;
+  esac
+  if [[ ! -f "$dir/scripts/semver-bump.sh" ]]; then
+    err "$name missing scripts/semver-bump.sh"
+  fi
+  if [[ ! -f "$dir/VERSION" ]]; then
+    err "$name missing VERSION file"
+  fi
+  log "  $name: OK"
+done
+log ""
+
+# --- CI static check helpers (defined early for --ci-static-only) ---
+ci_static_check_repo() {
+  local repo_name="$1"
+  local repo_root="$2"
+  local workflows_dir="$repo_root/.github/workflows"
+  local ci_yml="$workflows_dir/ci.yml"
+  local main_workflow=""
+  local has_test_sh=""
+  local has_pr=""
+  local has_push=""
+  local git_mode=""
+  local ci_chmod=""
+
+  if [[ ! -d "$workflows_dir" ]]; then
+    err "CI check [$repo_name]: .github/workflows does not exist. Add .github/workflows/ with at least one workflow YAML."
+  fi
+
+  local yaml_count=0
+  for f in "$workflows_dir"/*.yml "$workflows_dir"/*.yaml; do
+    [[ -e "$f" ]] || continue
+    ((yaml_count++)) || true
+  done
+  if [[ "$yaml_count" -eq 0 ]]; then
+    err "CI check [$repo_name]: .github/workflows has no workflow YAML files. Add at least one (e.g. ci.yml)."
+  fi
+
+  if [[ -f "$ci_yml" ]]; then
+    main_workflow="$ci_yml"
+  else
+    for wf in "$workflows_dir"/*.yml "$workflows_dir"/*.yaml; do
+      [[ -e "$wf" ]] || continue
+      if grep -qE 'scripts/test\.sh|\./scripts/test\.sh' "$wf" 2>/dev/null; then
+        main_workflow="$wf"
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "$main_workflow" ]]; then
+    err "CI check [$repo_name]: No main CI workflow found. Add .github/workflows/ci.yml that runs ./scripts/test.sh (Step 2.3)."
+  fi
+
+  has_test_sh="$(grep -E 'scripts/test\.sh|\./scripts/test\.sh' "$main_workflow" 2>/dev/null || true)"
+  if [[ -z "$has_test_sh" ]]; then
+    err "CI check [$repo_name]: Main workflow ($main_workflow) must run ./scripts/test.sh as the single source of truth (Step 2.3)."
+  fi
+
+  has_pr="$(grep -A 20 '^on:' "$main_workflow" 2>/dev/null | grep -E '^\s*pull_request:' || true)"
+  has_push="$(grep -A 20 '^on:' "$main_workflow" 2>/dev/null | grep -E '^\s*push:' || true)"
+  if [[ -z "$has_pr" ]] || [[ -z "$has_push" ]]; then
+    err "CI check [$repo_name]: Main workflow ($main_workflow) must trigger on BOTH pull_request and push. Add:
+  on:
+    pull_request:
+    push:"
+  fi
+
+  if [[ "$repo_name" == "backend" ]] || [[ "$repo_name" == "infra" ]]; then
+    local test_sh="$repo_root/scripts/test.sh"
+    if [[ -f "$test_sh" ]]; then
+      git_mode="$(cd "$repo_root" && git ls-files -s -- scripts/test.sh 2>/dev/null | awk '{print $1}')"
+      ci_chmod="$(grep -E 'chmod.*\+x.*scripts|chmod.*scripts/test' "$main_workflow" 2>/dev/null || true)"
+      if [[ "$git_mode" != "100755" ]] && [[ -z "$ci_chmod" ]]; then
+        err "CI check [$repo_name]: scripts/test.sh must be executable in git (chmod +x; mode 100755) OR CI must run 'chmod +x scripts/test.sh' before use. File: $test_sh"
+      fi
+    fi
+  fi
+
+  log "CI static check [$repo_name]: OK"
+}
+
+ci_commit_pr_doc_check() {
+  local workflows_dir="$INFRA_ROOT/.github/workflows"
+  local has_pr_check=""
+  local has_commit_check=""
+  local readme_mentions=""
+
+  for wf in "$workflows_dir"/*.yml "$workflows_dir"/*.yaml; do
+    [[ -e "$wf" ]] || continue
+    if grep -qiE 'pr.title|pr_title|pull_request.*title' "$wf" 2>/dev/null; then has_pr_check="yes"; fi
+    if grep -qiE 'commit.message|commit_message|conventional' "$wf" 2>/dev/null; then has_commit_check="yes"; fi
+  done
+
+  if [[ -n "$has_pr_check" ]] || [[ -n "$has_commit_check" ]]; then
+    readme_mentions="$(grep -iE 'conventional commit|PR title|pr title' "$INFRA_ROOT/README.md" 2>/dev/null || true)"
+    if [[ -z "$readme_mentions" ]]; then
+      err "CI check [infra]: Workflows enforce PR title/commit checks but README does not document expected Conventional Commits + PR title format. Add a 'CI expectations' section."
+    fi
+  fi
+  log "CI commit/PR doc check: OK"
+}
+
+# --- CI-static-only mode: run only static checks, then exit ---
+if [[ "$CI_STATIC_ONLY" == "true" ]]; then
+  log "Running CI static checks (--ci-static-only)..."
+  ci_static_check_repo "backend" "$BACKEND_ROOT"
+  ci_static_check_repo "frontend" "$FRONTEND_ROOT"
+  ci_static_check_repo "infra" "$INFRA_ROOT"
+  ci_commit_pr_doc_check
+  log ""
+  post_merge_summary
+  log "CI static checks passed."
+  exit 0
+fi
+
+# --- Pre-flight: clean working tree ---
+log "Pre-flight: working trees..."
 for name in backend frontend infra; do
   case "$name" in
     backend)  dir="$BACKEND_ROOT" ;;
@@ -58,14 +206,30 @@ for name in backend frontend infra; do
     err "$name has uncommitted changes. Resolve first:
   cd $dir
   git status
-  Then: commit, stash, or discard changes."
+  Then: commit, stash, or discard."
   fi
   log "  $name: clean"
 done
 log ""
 
-# c) Ensure origin remote and fetch
-log "Fetching from origin..."
+# --- Pre-flight: branch allowed (main, master, feature/*) ---
+log "Pre-flight: branches..."
+for name in backend frontend infra; do
+  case "$name" in
+    backend)  dir="$BACKEND_ROOT" ;;
+    frontend) dir="$FRONTEND_ROOT" ;;
+    infra)    dir="$INFRA_ROOT" ;;
+  esac
+  branch="$(cd "$dir" && git rev-parse --abbrev-ref HEAD)"
+  if [[ "$branch" != "main" && "$branch" != "master" && "$branch" != feature/* ]]; then
+    err "$name is on branch '$branch'. Allowed: main, master, or feature/*"
+  fi
+  log "  $name: $branch"
+done
+log ""
+
+# --- Pre-flight: fetch ---
+log "Pre-flight: fetch origin..."
 for name in backend frontend infra; do
   case "$name" in
     backend)  dir="$BACKEND_ROOT" ;;
@@ -73,7 +237,7 @@ for name in backend frontend infra; do
     infra)    dir="$INFRA_ROOT" ;;
   esac
   if ! (cd "$dir" && git remote get-url origin &>/dev/null); then
-    err "$name has no origin remote. Add it: cd $dir && git remote add origin <url>"
+    err "$name has no origin remote"
   fi
   if [[ "$DRY_RUN" == "true" ]]; then
     log "  $name: would fetch"
@@ -84,9 +248,17 @@ for name in backend frontend infra; do
 done
 log ""
 
-# d) Ensure each repo on main and up to date (or offer to create feature branch)
-log "Checking branches..."
-not_on_main=()
+# --- CI static checks (run before tagging) ---
+log "Running CI static checks..."
+ci_static_check_repo "backend" "$BACKEND_ROOT"
+ci_static_check_repo "frontend" "$FRONTEND_ROOT"
+ci_static_check_repo "infra" "$INFRA_ROOT"
+ci_commit_pr_doc_check
+log "CI static checks passed."
+log ""
+
+# --- Print branch + short SHA per repo ---
+log "Repo state:"
 for name in backend frontend infra; do
   case "$name" in
     backend)  dir="$BACKEND_ROOT" ;;
@@ -94,144 +266,170 @@ for name in backend frontend infra; do
     infra)    dir="$INFRA_ROOT" ;;
   esac
   branch="$(cd "$dir" && git rev-parse --abbrev-ref HEAD)"
-  if [[ "$branch" != "main" && "$branch" != "master" && "$branch" != feature/* ]]; then
-    not_on_main+=("$name:$branch")
+  sha="$(cd "$dir" && git rev-parse --short HEAD)"
+  log "  $name: $branch @ $sha"
+done
+log ""
+
+# --- Semver dry-run per repo, build release plan ---
+log "=== Release Plan (semver-bump --dry-run) ==="
+backend_bump="noop"
+frontend_bump="noop"
+infra_bump="noop"
+
+for name in backend frontend infra; do
+  case "$name" in
+    backend)  dir="$BACKEND_ROOT" ;;
+    frontend) dir="$FRONTEND_ROOT" ;;
+    infra)    dir="$INFRA_ROOT" ;;
+  esac
+  out="$(cd "$dir" && chmod +x scripts/semver-bump.sh 2>/dev/null; ./scripts/semver-bump.sh --dry-run 2>&1)" || true
+  if [[ "$out" == *"No version bump required."* ]]; then
+    eval "${name}_bump=\"noop\""
+    log "  $name: noop"
+  else
+    current="$(echo "$out" | grep -E '^Current version:' | sed 's/Current version:[[:space:]]*//')"
+    bump_type="$(echo "$out" | grep -E '^Bump type:' | sed 's/Bump type:[[:space:]]*//')"
+    next="$(echo "$out" | grep -E '^Next version:' | sed 's/Next version:[[:space:]]*//')"
+    eval "${name}_bump=\"$bump_type\""
+    log "  $name: bump $bump_type ${current} -> ${next} (tag v${next})"
   fi
 done
+log ""
 
-if [[ ${#not_on_main[@]} -gt 0 ]]; then
-  log "Some repos are not on main:"
-  printf '  %s\n' "${not_on_main[@]}"
-  if [[ "$DRY_RUN" == "true" ]]; then
-    log "  (Dry-run: would prompt to create feature branches)"
-  else
-    printf "Create feature branches from main for these repos? (y/n): "
-    read -r ans
-    case "${ans:-}" in
-      [yY]|[yY][eE][sS])
-        for entry in "${not_on_main[@]}"; do
-          name="${entry%%:*}"
-          case "$name" in
-            backend)  dir="$BACKEND_ROOT" ;;
-            frontend) dir="$FRONTEND_ROOT" ;;
-            infra)    dir="$INFRA_ROOT" ;;
-          esac
-          (cd "$dir" && git checkout main 2>/dev/null || git checkout master) || true
-          (cd "$dir" && git pull --ff-only origin main 2>/dev/null || git pull --ff-only origin master) || true
-          new_branch="feature/release-${name}-$(date +%Y%m%d-%H%M)"
-          (cd "$dir" && git checkout -b "$new_branch")
-          log "  $name: created $new_branch"
-        done
-        ;;
-      *)
-        err "Exiting. Switch repos to main manually, or re-run and choose y."
-        ;;
-    esac
-  fi
-  log ""
+# --- All noop check ---
+if [[ "$backend_bump" == "noop" && "$frontend_bump" == "noop" && "$infra_bump" == "noop" ]]; then
+  log "No release required."
+  exit 0
 fi
 
-if [[ "$DRY_RUN" != "true" ]]; then
-  # Sync main
+# --- Dry-run ends here ---
+if [[ "$DRY_RUN" == "true" ]]; then
+  if [[ "$SKIP_CI_LOCAL" != "true" ]] && [[ "$ACT_AVAILABLE" == "true" ]]; then
+    log "Local CI (act) commands that would run:"
+    for name in backend frontend infra; do
+      case "$name" in
+        backend)  dir="$BACKEND_ROOT" ;;
+        frontend) dir="$FRONTEND_ROOT" ;;
+        infra)    dir="$INFRA_ROOT" ;;
+      esac
+      if [[ -f "$dir/.github/workflows/ci.yml" ]]; then
+        log "  $name: cd $dir && act push -W .github/workflows/ci.yml --dry-run"
+      fi
+    done
+    log ""
+  fi
+  log "Dry-run complete. Run with --apply to execute."
+  post_merge_summary
+  exit 0
+fi
+
+# --- Apply mode: act (local CI) ---
+RUN_ACT="false"
+if [[ "$SKIP_CI_LOCAL" == "true" ]]; then
+  RUN_ACT="false"
+elif [[ "$ACT_AVAILABLE" == "true" ]]; then
+  RUN_ACT="true"
+else
+  if [[ "$APPLY" == "true" ]]; then
+    err "act not installed. Install with: brew install act (macOS) or see https://github.com/nektos/act. Or pass --skip-ci-local to skip local CI run."
+  fi
+fi
+
+if [[ "$RUN_ACT" == "true" ]]; then
+  log "=== Local CI (act) ==="
   for name in backend frontend infra; do
     case "$name" in
       backend)  dir="$BACKEND_ROOT" ;;
       frontend) dir="$FRONTEND_ROOT" ;;
       infra)    dir="$INFRA_ROOT" ;;
     esac
-    branch="$(cd "$dir" && git rev-parse --abbrev-ref HEAD)"
-    if [[ "$branch" == "main" || "$branch" == "master" ]]; then
-      (cd "$dir" && git pull --ff-only "origin" "$branch") || err "Failed to pull $name"
+    if [[ -f "$dir/.github/workflows/ci.yml" ]]; then
+      log "  $name..."
+      if ! (cd "$dir" && act push -W .github/workflows/ci.yml 2>&1); then
+        err "act failed for $name. Check logs above. Fix CI or run with --skip-ci-local."
+      fi
+      log "  $name: act PASS"
     fi
   done
-  log "Main branches synced."
   log ""
 fi
 
-# e) Run Step 2.3 tests per repo
-log "=== Step 2.3: Running ./scripts/test.sh ==="
-backend_ok="false"
-frontend_ok="false"
-infra_ok="false"
-
-if [[ "$DRY_RUN" == "true" ]]; then
-  log "  backend:  Would run ./scripts/test.sh"
-  log "  frontend: Would run ./scripts/test.sh"
-  log "  infra:    Would run ./scripts/test.sh"
-  backend_ok="true"
-  frontend_ok="true"
-  infra_ok="true"
-else
-  log "  backend..."
-  if (cd "$BACKEND_ROOT" && chmod +x scripts/test.sh 2>/dev/null; ./scripts/test.sh); then
-    backend_ok="true"
-    log "  backend:  PASS"
-  else
-    log "  backend:  FAIL"
-  fi
-
-  log "  frontend..."
-  if (cd "$FRONTEND_ROOT" && chmod +x scripts/test.sh 2>/dev/null; ./scripts/test.sh); then
-    frontend_ok="true"
-    log "  frontend: PASS"
-  else
-    log "  frontend: FAIL"
-  fi
-
-  log "  infra..."
-  if (cd "$INFRA_ROOT" && chmod +x scripts/test.sh 2>/dev/null; ./scripts/test.sh); then
-    infra_ok="true"
-    log "  infra:    PASS"
-  else
-    log "  infra:    FAIL"
-  fi
-fi
+# --- Apply mode: run tests ---
+log "=== Testing gates ==="
+log "Step 2.3: ./scripts/test.sh"
+for name in backend frontend infra; do
+  case "$name" in
+    backend)  dir="$BACKEND_ROOT" ;;
+    frontend) dir="$FRONTEND_ROOT" ;;
+    infra)    dir="$INFRA_ROOT" ;;
+  esac
+  log "  $name..."
+  (cd "$dir" && ./scripts/test.sh) || err "$name scripts/test.sh failed"
+  log "  $name: PASS"
+done
 log ""
 
-# f) Backend runtime smoke tests
-log "=== Backend Runtime Smoke Tests ==="
-BASE_URL="${BASE_URL%/}"
-if [[ "$DRY_RUN" == "true" ]]; then
-  log "  Would check $BASE_URL/health"
-  log "  Would run: BASE_URL=$BASE_URL ./scripts/runtime-smoke-test.sh"
-  backend_smoke_ok="true"
-else
-  # Check if backend is reachable
-  if ! curl -sS --max-time 3 -o /dev/null -w "%{http_code}" "$BASE_URL/health" 2>/dev/null | grep -q 200; then
-    err "Backend not reachable at $BASE_URL.
+# --- Runtime smoke if backend in plan ---
+if [[ "$backend_bump" != "noop" ]]; then
+  log "Backend runtime smoke (BASE_URL=${BASE_URL})..."
+  if ! curl -sS --max-time 3 -o /dev/null -w "%{http_code}" "${BASE_URL%/}/health" 2>/dev/null | grep -q 200; then
+    err "Backend not reachable at ${BASE_URL}.
 Start backend first:
   cd $BACKEND_ROOT && ./start-local.sh"
   fi
-  log "  Backend reachable at $BASE_URL"
-  if (cd "$BACKEND_ROOT" && chmod +x scripts/runtime-smoke-test.sh 2>/dev/null; BASE_URL="$BASE_URL" ./scripts/runtime-smoke-test.sh); then
-    backend_smoke_ok="true"
-    log "  Runtime smoke: PASS"
-  else
-    backend_smoke_ok="false"
-    log "  Runtime smoke: FAIL"
-  fi
+  (cd "$BACKEND_ROOT" && BASE_URL="${BASE_URL%/}" ./scripts/runtime-smoke-test.sh) || err "Backend runtime smoke failed"
+  log "  smoke: PASS"
+  log ""
 fi
+
+# --- Approval ---
+if [[ "$YES" != "true" ]]; then
+  printf "Apply release (run semver-bump --apply, push tags)? (y/n): "
+  read -r ans
+  case "${ans:-}" in
+    [yY]|[yY][eE][sS]) ;;
+    *) err "Aborted." ;;
+  esac
+fi
+
+# --- Apply semver-bump --apply per repo with bump ---
+log "=== Applying releases ==="
+for name in backend frontend infra; do
+  bump_val=""
+  case "$name" in
+    backend)  dir="$BACKEND_ROOT"; bump_val="$backend_bump" ;;
+    frontend) dir="$FRONTEND_ROOT"; bump_val="$frontend_bump" ;;
+    infra)    dir="$INFRA_ROOT"; bump_val="$infra_bump" ;;
+  esac
+  if [[ "$bump_val" != "noop" ]]; then
+    log "  $name..."
+    (cd "$dir" && ./scripts/semver-bump.sh --apply) || err "$name semver-bump --apply failed"
+    log "  $name: applied"
+  fi
+done
 log ""
 
-# g) Final summary
-log "=== Summary ==="
-if [[ "$DRY_RUN" == "true" ]]; then
-  log "DRY RUN complete. No changes made."
-  log "Run without --dry-run to execute checks."
-else
-  log "Backend  Step 2.3:    $([[ "$backend_ok" == true ]] && echo PASS || echo FAIL)"
-  log "Frontend Step 2.3:    $([[ "$frontend_ok" == true ]] && echo PASS || echo FAIL)"
-  log "Infra    Step 2.3:    $([[ "$infra_ok" == true ]] && echo PASS || echo FAIL)"
-  log "Backend  Runtime:    $([[ "${backend_smoke_ok:-false}" == true ]] && echo PASS || echo FAIL)"
-  if [[ "$backend_ok" != "true" || "$frontend_ok" != "true" || "$infra_ok" != "true" || "${backend_smoke_ok:-false}" != "true" ]]; then
-    log ""
-    log "Some checks failed. Fix failures before opening PRs."
-    exit 1
+# --- Push tags only ---
+log "Pushing tags..."
+for name in backend frontend infra; do
+  bump_val=""
+  case "$name" in
+    backend)  bump_val="$backend_bump" ;;
+    frontend) bump_val="$frontend_bump" ;;
+    infra)    bump_val="$infra_bump" ;;
+  esac
+  if [[ "$bump_val" != "noop" ]]; then
+    case "$name" in
+      backend)  dir="$BACKEND_ROOT" ;;
+      frontend) dir="$FRONTEND_ROOT" ;;
+      infra)    dir="$INFRA_ROOT" ;;
+    esac
+    (cd "$dir" && git push origin --tags) || err "Failed to push tags for $name"
+    log "  $name: tags pushed"
   fi
-  log ""
-  log "All checks passed. Next:"
-  log "  1. Open PRs per repo (use scripts/release-ready.sh in each repo)"
-  log "  2. CI must be green before applying release label"
-  log "  3. This script does NOT deploy."
-fi
+done
 log ""
+log "Release complete. Branches were NOT pushed."
+log ""
+post_merge_summary

@@ -19,7 +19,7 @@ jobs:
               repo,
               pull_number: prNumber
             });
-            const regex = /^(feat|fix|refactor|chore|docs|test|ci|perf|build)(\!)?: .+/;
+            const regex = /^(feat|fix|refactor|chore|docs|test|ci|perf|build)(\([^)]+\))?(\!)?: .+/;
             const mergePrefix = /^Merge /;
             const invalid = [];
             for (const c of commits) {
@@ -33,7 +33,7 @@ jobs:
               const list = invalid.map(i => `- ${i.sha}: ${i.msg}`).join('\n');
               core.setFailed(
                 'Some commits do not follow Conventional Commits format.\n' +
-                'Example: feat: add release orchestrator\n\n' +
+                'Example: feat: add release orchestrator or feat(ci): add checks\n\n' +
                 'Invalid commits:\n' + list
               );
             }

@@ -5,8 +5,10 @@ name: Release Tag
 
 on:
   pull_request:
-    types: [closed]
-    branches: [main]
+    types:
+      - closed
+    branches:
+      - main
 
 permissions:
   contents: write  # required for creating releases and tags
@@ -71,7 +73,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$VERSION" -m "Release $VERSION"
           git push origin "$VERSION"
-          gh release create "$VERSION" \
-            --title "Release $VERSION" \
-            --notes "## Changes
-- PR #${PR_NUM}: ${PR_TITLE}"
+          NOTES="## Changes"$'\n'"* PR #${PR_NUM}: ${PR_TITLE}"
+          gh release create "$VERSION" --title "Release $VERSION" --notes "$NOTES"
