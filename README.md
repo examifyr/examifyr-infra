@@ -70,6 +70,7 @@ Each repo must have `scripts/semver-bump.sh` and `VERSION` at the repo root.
 
 ```bash
 # Dry-run (default): show release plan, no changes
+# STRICT: all repos must be on main or master
 ./scripts/release-orchestrate.sh --dry-run
 
 # Apply: run tests, prompt for approval, apply bumps, push tags
@@ -78,16 +79,25 @@ Each repo must have `scripts/semver-bump.sh` and `VERSION` at the repo root.
 # Apply without prompt (e.g. CI)
 ./scripts/release-orchestrate.sh --apply --yes
 
+# Allow feature/* branches (for planning / WIP runs)
+./scripts/release-orchestrate.sh --dry-run --allow-feature-branches
+./scripts/release-orchestrate.sh --apply --allow-feature-branches
+
 # Custom backend URL for runtime smoke (default: http://127.0.0.1:8000)
 BASE_URL=http://127.0.0.1:8000 ./scripts/release-orchestrate.sh --apply
 ```
+
+### Branch policy
+
+- **Default (STRICT)**: All repos must be on `main` or `master`. Dry-run and apply both fail if any repo is on a feature branch.
+- **`--allow-feature-branches`**: Also allows `feature/*` branches. Use for planning or WIP runs when not all repos are merged to main.
 
 ### Pre-flight checks (must pass)
 
 1. Repo paths exist.
 2. Each repo has `scripts/semver-bump.sh` and `VERSION`.
-3. All working trees clean.
-4. All branches allowed: `main`, `master`, or `feature/*`.
+3. All branches allowed (STRICT: main/master only; or feature/* with `--allow-feature-branches`).
+4. All working trees clean.
 5. `origin` fetched.
 
 ### Testing gates (before apply)
@@ -104,4 +114,4 @@ BASE_URL=http://127.0.0.1:8000 ./scripts/release-orchestrate.sh --apply
 ### Dirty repo or wrong branch
 
 - **Dirty**: Script exits. Fix with `git status`, then commit, stash, or discard.
-- **Wrong branch**: Only `main`, `master`, or `feature/*` allowed. Switch manually and re-run.
+- **Wrong branch**: STRICT mode (default) allows only `main` or `master`. Use `--allow-feature-branches` for `feature/*` (planning/WIP). Switch manually and re-run.

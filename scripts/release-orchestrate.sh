@@ -2,7 +2,7 @@
 # Federated SemVer Release Orchestrator: infra orchestrates, each repo owns VERSION + semver-bump.sh.
 # Runs from examifyr-infra. Requires sibling folders: examifyr-backend, examifyr-frontend.
 # Usage: ./scripts/release-orchestrate.sh [--dry-run] [--apply] [--yes] [--base-url URL]
-#         [--ci-static-only] [--ci-local] [--skip-ci-local]
+#         [--ci-static-only] [--ci-local] [--skip-ci-local] [--allow-feature-branches]
 # Default: --dry-run. --apply requires approval unless --yes.
 
 set -euo pipefail
@@ -27,6 +27,7 @@ YES="false"
 CI_STATIC_ONLY="false"
 CI_LOCAL=""
 SKIP_CI_LOCAL="false"
+ALLOW_FEATURE_BRANCHES="false"
 
 # Parse flags (APPLY, CI_LOCAL used in apply-mode act logic)
 # shellcheck disable=SC2034
@@ -39,7 +40,8 @@ while [[ $# -gt 0 ]]; do
     --ci-static-only) CI_STATIC_ONLY="true"; shift ;;
     --ci-local)      CI_LOCAL="true"; shift ;;
     --skip-ci-local) SKIP_CI_LOCAL="true"; shift ;;
-    *) err "Unknown flag: $1. Use --dry-run, --apply, --yes, --base-url, --ci-static-only, --ci-local, --skip-ci-local" ;;
+    --allow-feature-branches) ALLOW_FEATURE_BRANCHES="true"; shift ;;
+    *) err "Unknown flag: $1. Use --dry-run, --apply, --yes, --base-url, --ci-static-only, --ci-local, --skip-ci-local, --allow-feature-branches" ;;
   esac
 done
 
@@ -56,6 +58,11 @@ if [[ "$DRY_RUN" == "true" ]]; then
   log "Mode: --dry-run (no changes)"
 else
   log "Mode: --apply"
+fi
+if [[ "$ALLOW_FEATURE_BRANCHES" == "true" ]]; then
+  log "Branch policy: ALLOW FEATURE/*"
+else
+  log "Branch policy: STRICT (main/master only)"
 fi
 log ""
 
@@ -87,6 +94,28 @@ for name in backend frontend infra; do
     err "$name missing VERSION file"
   fi
   log "  $name: OK"
+done
+log ""
+
+# --- Pre-flight: branch allowed (runs for all modes including --ci-static-only) ---
+log "Pre-flight: branches..."
+for name in backend frontend infra; do
+  case "$name" in
+    backend)  dir="$BACKEND_ROOT" ;;
+    frontend) dir="$FRONTEND_ROOT" ;;
+    infra)    dir="$INFRA_ROOT" ;;
+  esac
+  branch="$(cd "$dir" && git rev-parse --abbrev-ref HEAD)"
+  if [[ "$ALLOW_FEATURE_BRANCHES" == "true" ]]; then
+    if [[ "$branch" != "main" && "$branch" != "master" && "$branch" != feature/* ]]; then
+      err "$name is on branch '$branch'. Allowed: main, master, or feature/*. Use --allow-feature-branches for feature/*."
+    fi
+  else
+    if [[ "$branch" != "main" && "$branch" != "master" ]]; then
+      err "$name is on branch '$branch'. STRICT mode: only main or master allowed. Switch to main/master or use --allow-feature-branches for planning/WIP runs."
+    fi
+  fi
+  log "  $name: $branch"
 done
 log ""
 
@@ -209,22 +238,6 @@ for name in backend frontend infra; do
   Then: commit, stash, or discard."
   fi
   log "  $name: clean"
-done
-log ""
-
-# --- Pre-flight: branch allowed (main, master, feature/*) ---
-log "Pre-flight: branches..."
-for name in backend frontend infra; do
-  case "$name" in
-    backend)  dir="$BACKEND_ROOT" ;;
-    frontend) dir="$FRONTEND_ROOT" ;;
-    infra)    dir="$INFRA_ROOT" ;;
-  esac
-  branch="$(cd "$dir" && git rev-parse --abbrev-ref HEAD)"
-  if [[ "$branch" != "main" && "$branch" != "master" && "$branch" != feature/* ]]; then
-    err "$name is on branch '$branch'. Allowed: main, master, or feature/*"
-  fi
-  log "  $name: $branch"
 done
 log ""
 
