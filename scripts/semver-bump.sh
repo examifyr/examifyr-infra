@@ -29,7 +29,7 @@ fi
 cd "$REPO_ROOT"
 
 # Read current version (strip any leading v)
-current="$(cat "$VERSION_FILE" | tr -d '[:space:]')"
+current="$(tr -d '[:space:]' < "$VERSION_FILE")"
 current="${current#v}"
 if [[ ! "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "ERROR: Invalid VERSION format: $current (expected X.Y.Z)" >&2

@@ -28,7 +28,8 @@ CI_STATIC_ONLY="false"
 CI_LOCAL=""
 SKIP_CI_LOCAL="false"
 
-# Parse flags
+# Parse flags (APPLY, CI_LOCAL used in apply-mode act logic)
+# shellcheck disable=SC2034
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)       DRY_RUN="true"; shift ;;
@@ -330,7 +331,9 @@ if [[ "$SKIP_CI_LOCAL" == "true" ]]; then
 elif [[ "$ACT_AVAILABLE" == "true" ]]; then
   RUN_ACT="true"
 else
-  err "act not installed. Install with: brew install act (macOS) or see https://github.com/nektos/act. Or pass --skip-ci-local to skip local CI run."
+  if [[ "$APPLY" == "true" ]]; then
+    err "act not installed. Install with: brew install act (macOS) or see https://github.com/nektos/act. Or pass --skip-ci-local to skip local CI run."
+  fi
 fi
 
 if [[ "$RUN_ACT" == "true" ]]; then
