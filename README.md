@@ -31,58 +31,71 @@ Run:
 ```
 This script is the single source of truth for repo checks, and CI runs it.
 
-## Release Orchestration (Local)
+## Release Orchestration (Federated SemVer)
 
-The release orchestrator runs centralized local checks across all Examifyr repos before you open PRs. It does **not** deploy; it only validates that local tests pass.
+Infra orchestrates releases; each repo owns its own `VERSION` file and `scripts/semver-bump.sh`. Infra triggers tagging and pushes tags only (never pushes branches).
 
-### Prerequisites (new laptop)
+### Federated SemVer
 
-- **Folder layout**: Clone all three repos as siblings:
-  ```
-  project/
-  ├── examifyr-infra/
-  ├── examifyr-backend/
-  └── examifyr-frontend/
-  ```
-- **Tools**: Git, Bash. Optional: `gh` (GitHub CLI) for per-repo release flow.
-- **Backend**: Python 3.11+ with venv; run from `examifyr-backend`.
-- **Frontend**: Node.js with npm; run from `examifyr-frontend`.
-- **Backend runtime**: For full checks, the backend must be running. Start it with:
-  ```bash
-  cd examifyr-backend && ./start-local.sh
-  ```
+- Each repo (backend, frontend, infra) has `VERSION` and `scripts/semver-bump.sh`.
+- `semver-bump.sh` analyzes conventional commits since the last tag and determines bump type (major/minor/patch).
+- Infra calls each repo’s `semver-bump.sh --dry-run` to build a release plan.
+- Infra runs tests, then (with approval) runs `semver-bump.sh --apply` per repo and pushes tags.
+- Branches are never pushed by the orchestrator.
 
-### Commands
+### Required layout
 
-From `examifyr-infra`:
-
-```bash
-# Dry-run: print what would happen, no changes
-./scripts/release-orchestrate.sh --dry-run
-
-# Real run: execute all checks
-./scripts/release-orchestrate.sh
-
-# Custom backend URL (default: http://127.0.0.1:8000)
-./scripts/release-orchestrate.sh --base-url http://localhost:8000
+```
+project/
+├── examifyr-infra/
+├── examifyr-backend/
+└── examifyr-frontend/
 ```
 
-### What it checks
+Each repo must have `scripts/semver-bump.sh` and `VERSION` at the repo root.
 
-1. **Repo paths** – backend, frontend, infra exist as siblings.
-2. **Working trees** – all repos must be clean (no uncommitted changes). If dirty, the script stops and tells you which repo and how to fix it.
-3. **Remotes** – each repo has `origin`; fetches from origin.
-4. **Branches** – if any repo is not on `main`, you are prompted: create a feature branch from main? (y/n). If no, the script exits.
-5. **Step 2.3** – runs `./scripts/test.sh` in each repo (backend, frontend, infra).
-6. **Backend runtime smoke** – if the backend is reachable at the base URL, runs `./scripts/runtime-smoke-test.sh`. If not reachable, prints how to start it and exits.
+### Typical flows
 
-### What it does NOT do
+- **One repo changed**: Only that repo shows a bump in the plan; others are noop.
+- **Two repos changed**: Both show bumps; both get `--apply` and tag push.
+- **All three changed**: All three are bumped and tagged.
+
+### Commands (run from examifyr-infra)
+
+```bash
+# Dry-run (default): show release plan, no changes
+./scripts/release-orchestrate.sh --dry-run
+
+# Apply: run tests, prompt for approval, apply bumps, push tags
+./scripts/release-orchestrate.sh --apply
+
+# Apply without prompt (e.g. CI)
+./scripts/release-orchestrate.sh --apply --yes
+
+# Custom backend URL for runtime smoke (default: http://127.0.0.1:8000)
+BASE_URL=http://127.0.0.1:8000 ./scripts/release-orchestrate.sh --apply
+```
+
+### Pre-flight checks (must pass)
+
+1. Repo paths exist.
+2. Each repo has `scripts/semver-bump.sh` and `VERSION`.
+3. All working trees clean.
+4. All branches allowed: `main`, `master`, or `feature/*`.
+5. `origin` fetched.
+
+### Testing gates (before apply)
+
+- Step 2.3: `./scripts/test.sh` in backend, frontend, infra.
+- If backend is in the release plan (bump ≠ noop): runtime smoke test at `BASE_URL`. Backend must already be running.
+
+### What the orchestrator does NOT do
 
 - Does not deploy.
-- Does not create PRs, tags, or releases.
-- Does not modify code; only runs tests and checks.
+- Does not push branches.
+- Does not start servers (backend must be running for smoke tests).
 
-### Dirty repos or wrong branch
+### Dirty repo or wrong branch
 
-- **Dirty working tree**: The script exits immediately. Resolve with `git status`, then `commit`, `stash`, or `discard` in that repo.
-- **Not on main**: The script lists repos not on main and asks: create feature branches? (y/n). If you choose no, it exits. Switch to main manually and re-run, or choose yes to create feature branches from main.
+- **Dirty**: Script exits. Fix with `git status`, then commit, stash, or discard.
+- **Wrong branch**: Only `main`, `master`, or `feature/*` allowed. Switch manually and re-run.
