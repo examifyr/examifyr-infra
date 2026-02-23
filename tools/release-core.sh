@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Release-core: strict release automation
 # Invoked from sibling repos via scripts/release-ready.sh
-# Usage: release-core.sh <repo_name>
+# Usage: release-core.sh <repo_name> [--dry-run]
 # repo_name: backend|frontend|infra
 # Env: BACKEND_SMOKE=1 to run backend runtime smoke (backend only)
+# Env: DRY_RUN=true or arg --dry-run for non-interactive analysis
 
 set -euo pipefail
 
@@ -12,6 +13,15 @@ LIB_DIR="${SCRIPT_DIR}/lib"
 REPO_NAME="${1:-}"
 BACKEND_SMOKE="${BACKEND_SMOKE:-0}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
+
+# Parse DRY_RUN: from env or from args
+DRY_RUN="${DRY_RUN:-false}"
+for arg in "$@"; do
+  if [[ "$arg" == "--dry-run" ]]; then
+    DRY_RUN="true"
+    break
+  fi
+done
 
 # shellcheck source=tools/lib/git.sh
 source "${LIB_DIR}/git.sh"
@@ -28,6 +38,27 @@ fi
 # Must run from the target repo root (called from examifyr-backend, examifyr-frontend, or examifyr-infra)
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || err "Not in a git repository"
 cd "$REPO_ROOT"
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+  echo "=== DRY RUN MODE ==="
+  echo "Current branch: $BRANCH"
+  echo "Repo: $REPO_NAME"
+  echo ""
+  echo "Would run: git fetch origin && git rebase origin/main"
+  echo "Would run: ./scripts/test.sh (Step 2.3)"
+  if [[ "$REPO_NAME" == "backend" && "$BACKEND_SMOKE" == "1" && -f "./scripts/runtime-smoke-test.sh" ]]; then
+    echo "Would run: runtime smoke test against ${BASE_URL}"
+  fi
+  echo "Would push branch to origin"
+  echo "Would find or create PR to main"
+  echo "Would check CI status (require green)"
+  echo "Would prompt: Apply release label?"
+  echo "Would print next steps (Claude review, Gemini QA, merge)"
+  echo ""
+  echo "No git state was modified."
+  exit 0
+fi
 
 # 1. Assert repo is clean
 log "Checking repo is clean..."
