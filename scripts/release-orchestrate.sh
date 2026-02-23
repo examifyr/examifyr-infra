@@ -6,6 +6,9 @@
 
 set -euo pipefail
 
+log() { printf '%s\n' "$1"; }
+err() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
+
 INFRA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$INFRA_ROOT/.." && pwd)"
 BACKEND_ROOT="${PROJECT_ROOT}/examifyr-backend"
@@ -21,9 +24,6 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown flag: $1. Use --dry-run or --base-url URL" >&2; exit 1 ;;
   esac
 done
-
-log() { printf '%s\n' "$1"; }
-err() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
 
 log "=== Examifyr Release Orchestrator ==="
 log ""
@@ -94,7 +94,7 @@ for name in backend frontend infra; do
     infra)    dir="$INFRA_ROOT" ;;
   esac
   branch="$(cd "$dir" && git rev-parse --abbrev-ref HEAD)"
-  if [[ "$branch" != "main" && "$branch" != "master" ]]; then
+  if [[ "$branch" != "main" && "$branch" != "master" && "$branch" != feature/* ]]; then
     not_on_main+=("$name:$branch")
   fi
 done
